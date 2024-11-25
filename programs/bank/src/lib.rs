@@ -4,7 +4,7 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 declare_id!("83zrVmcBMziMhvMPBE1WWnexBz6UhMtiRrNF7F8nLS7e");
 
 #[program]
-pub mod bank_system {
+pub mod bank {
     use super::*;
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
@@ -76,6 +76,34 @@ pub mod bank_system {
         );
         Ok(())
     }
+
+    pub fn add_token(ctx: Context<AddToken>, mint: Pubkey) -> Result<()> {
+        let bank = &mut ctx.accounts.bank;
+
+        if bank.is_token_whitelisted(mint) {
+            return Err(ErrorCode::TokenAlreadyWhitelisted.into());
+        }
+
+        bank.add_token(mint);
+
+        msg!("Token {:?} đã được thêm vào danh sách whitelist.", mint);
+        Ok(())
+    }
+
+    pub fn initialize_bank(ctx: Context<InitializeBank>) -> Result<()> {
+        let bank = &mut ctx.accounts.bank;
+        bank.whitelist_tokens = Vec::new();
+        msg!("Bank initialized successfully");
+        Ok(())
+    }
+
+    pub fn initialize_bank_account(ctx: Context<InitializeBankAccount>) -> Result<()> {
+        let user_bank_account = &mut ctx.accounts.user_bank_account;
+        user_bank_account.owner = ctx.accounts.owner.key();
+        user_bank_account.balances = Vec::new();
+        msg!("User bank account initialized successfully");
+        Ok(())
+    }
 }
 
 #[account]
@@ -84,26 +112,12 @@ pub struct Bank {
 }
 
 impl Bank {
-    pub fn is_token_whitelisted(&self, mint: Pubkey) -> bool {
-        let whitelist_tokens: [Pubkey; 3] = [
-            Pubkey::new_from_array([
-                0x39, 0x6E, 0xFC, 0x2F, 0x1E, 0x8B, 0x35, 0xB9, 0x8A, 0xDB, 0x6C, 0x70, 0x74, 0xFD,
-                0x34, 0xDF, 0xF2, 0x0B, 0x36, 0xAD, 0x89, 0x59, 0xE3, 0x9B, 0x16, 0x42, 0x17, 0x91,
-                0x44, 0x82, 0x74, 0xE2,
-            ]),
-            Pubkey::new_from_array([
-                0x01, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
-                0x1F, 0x20, 0x21, 0x22,
-            ]),
-            Pubkey::new_from_array([
-                0x4A, 0xBC, 0xD1, 0xAB, 0x5B, 0x6F, 0xE7, 0x94, 0xC8, 0xE3, 0x93, 0x8E, 0xB5, 0xDC,
-                0xF8, 0xD1, 0x82, 0xAA, 0x71, 0x8F, 0xC9, 0x7F, 0x3F, 0x8A, 0xD4, 0x23, 0x6A, 0x72,
-                0xF1, 0xBB, 0x62, 0xFF,
-            ]),
-        ];
+    pub fn add_token(&mut self, mint: Pubkey) {
+        self.whitelist_tokens.push(mint);
+    }
 
-        whitelist_tokens.contains(&mint)
+    pub fn is_token_whitelisted(&self, mint: Pubkey) -> bool {
+        self.whitelist_tokens.contains(&mint)
     }
 }
 
@@ -144,6 +158,31 @@ impl BankAccount {
             .find(|(key, _)| *key == token)
             .map_or(false, |(_, balance)| *balance >= amount)
     }
+}
+
+#[derive(Accounts)]
+pub struct InitializeBankAccount<'info> {
+    #[account(init, payer = owner, space = 8 + 32 + 64 * 100)] // Định rõ dung lượng bộ nhớ
+    pub user_bank_account: Account<'info, BankAccount>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeBank<'info> {
+    #[account(init, payer = authority, space = 8 + 32 * 100)]
+    pub bank: Account<'info, Bank>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AddToken<'info> {
+    #[account(mut)]
+    pub bank: Account<'info, Bank>,
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -198,4 +237,6 @@ pub enum ErrorCode {
     InsufficientUserBalance,
     #[msg("The provided token is not supported.")]
     InvalidToken,
+    #[msg("Token is already whitelisted.")]
+    TokenAlreadyWhitelisted,
 }
