@@ -38,6 +38,7 @@ describe("Deposit", () => {
       mint,
       payer.publicKey
     );
+    console.log("userAta :>> ", userAta);
 
     const bankAta = await createAssociatedTokenAccount(
       provider.connection,
@@ -45,6 +46,7 @@ describe("Deposit", () => {
       mint,
       toKp.publicKey
     );
+    console.log("bankAta :>> ", bankAta);
 
     const mintAmount = 1000;
     await mintTo(
@@ -55,6 +57,7 @@ describe("Deposit", () => {
       payer.publicKey,
       mintAmount
     );
+    console.log("mintAmount :>> ", mintAmount);
 
     await program.methods
       .initializeBank()
@@ -68,7 +71,6 @@ describe("Deposit", () => {
     await program.methods
       .initializeBankAccount()
       .accounts({
-        bank: bank.publicKey,
         userBankAccount: bankAccount.publicKey,
         owner: payer.publicKey,
       })
@@ -98,6 +100,7 @@ describe("Deposit", () => {
       })
       .signers([payer])
       .rpc();
+    console.log("transferAmount :>> ", transferAmount);
 
     const bankTokenBalance = await provider.connection.getTokenAccountBalance(
       bankAta
