@@ -1,162 +1,201 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Token, TokenAccount};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 declare_id!("83zrVmcBMziMhvMPBE1WWnexBz6UhMtiRrNF7F8nLS7e");
 
 #[program]
-pub mod bank {
+pub mod bank_system {
     use super::*;
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-        let user_account = &mut ctx.accounts.user_account;
-        let user_token_account = &mut ctx.accounts.user_token_account;
-        let bank_token_account = &mut ctx.accounts.bank_token_account;
+        let token_mint = ctx.accounts.user_ata.mint;
 
-        // Kiểm tra số dư trên ví của người dùng
-        if user_token_account.amount < amount {
-            return Err(ErrorCode::InsufficientBalance.into());
-        }
-
-        // Kiểm tra loại token hợp lệ
-        let token_mint = user_token_account.mint;
-        if token_mint != BTC_MINT_KEY && token_mint != SOL_MINT_KEY && token_mint != USDC_MINT_KEY {
+        if !ctx.accounts.bank.is_token_whitelisted(token_mint) {
             return Err(ErrorCode::InvalidToken.into());
         }
 
-        // Chuyển token từ ví người dùng vào ví ngân hàng
+        if ctx.accounts.user_ata.amount < amount {
+            return Err(ErrorCode::InsufficientBalance.into());
+        }
+
         let cpi_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
-            anchor_spl::token::Transfer {
-                from: user_token_account.to_account_info(),
-                to: bank_token_account.to_account_info(),
-                authority: ctx.accounts.user.to_account_info(),
+            Transfer {
+                from: ctx.accounts.user_ata.to_account_info(),
+                to: ctx.accounts.bank_ata.to_account_info(),
+                authority: ctx.accounts.user_authority.to_account_info(),
             },
         );
-        anchor_spl::token::transfer(cpi_ctx, amount)?;
+        token::transfer(cpi_ctx, amount)?;
 
-        // Cập nhật số dư trong user_account (ngân hàng ghi nhận giao dịch)
-        user_account.balance += amount;
+        ctx.accounts
+            .user_bank_account
+            .add_balance(token_mint, amount)?;
 
-        // Lưu xác nhận giao dịch
-        msg!("Deposit of {} tokens from {} successful.", amount, ctx.accounts.user.key);
-
+        msg!(
+            "Deposit successful. Amount: {} Token: {:?}",
+            amount,
+            token_mint
+        );
         Ok(())
     }
 
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
-        let user_account = &mut ctx.accounts.user_account;
-        let user_token_account = &mut ctx.accounts.user_token_account;
-        let bank_token_account = &mut ctx.accounts.bank_token_account;
+        let token_mint = ctx.accounts.bank_ata.mint;
 
-        // Kiểm tra số dư trước khi rút
-        if user_account.balance < amount {
-            return Err(ErrorCode::InsufficientFunds.into());
+        if !ctx.accounts.bank.is_token_whitelisted(token_mint) {
+            return Err(ErrorCode::InvalidToken.into());
         }
 
-        // Chuyển token từ ví ngân hàng vào ví người dùng
+        if !ctx
+            .accounts
+            .user_bank_account
+            .has_sufficient_balance(token_mint, amount)
+        {
+            return Err(ErrorCode::InsufficientUserBalance.into());
+        }
+
         let cpi_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
-            anchor_spl::token::Transfer {
-                from: bank_token_account.to_account_info(),
-                to: user_token_account.to_account_info(),
-                authority: ctx.accounts.user.to_account_info(),
+            Transfer {
+                from: ctx.accounts.bank_ata.to_account_info(),
+                to: ctx.accounts.user_ata.to_account_info(),
+                authority: ctx.accounts.bank_authority.to_account_info(),
             },
         );
-        anchor_spl::token::transfer(cpi_ctx, amount)?;
+        token::transfer(cpi_ctx, amount)?;
 
-        // Giảm số dư trong user_account (ngân hàng ghi nhận giao dịch)
-        user_account.balance -= amount;
+        ctx.accounts
+            .user_bank_account
+            .subtract_balance(token_mint, amount)?;
 
-        // Lưu xác nhận giao dịch
-        msg!("Withdrawal of {} tokens by {} successful.", amount, ctx.accounts.user.key);
-
+        msg!(
+            "Withdraw successful. Amount: {} Token: {:?}",
+            amount,
+            token_mint
+        );
         Ok(())
     }
 }
 
+#[account]
+pub struct Bank {
+    pub whitelist_tokens: Vec<Pubkey>,
+}
+
+impl Bank {
+    pub fn is_token_whitelisted(&self, mint: Pubkey) -> bool {
+        let whitelist_tokens: [Pubkey; 3] = [
+            Pubkey::new_from_array([
+                0x39, 0x6E, 0xFC, 0x2F, 0x1E, 0x8B, 0x35, 0xB9, 0x8A, 0xDB, 0x6C, 0x70, 0x74, 0xFD,
+                0x34, 0xDF, 0xF2, 0x0B, 0x36, 0xAD, 0x89, 0x59, 0xE3, 0x9B, 0x16, 0x42, 0x17, 0x91,
+                0x44, 0x82, 0x74, 0xE2,
+            ]),
+            Pubkey::new_from_array([
+                0x01, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
+                0x1F, 0x20, 0x21, 0x22,
+            ]),
+            Pubkey::new_from_array([
+                0x4A, 0xBC, 0xD1, 0xAB, 0x5B, 0x6F, 0xE7, 0x94, 0xC8, 0xE3, 0x93, 0x8E, 0xB5, 0xDC,
+                0xF8, 0xD1, 0x82, 0xAA, 0x71, 0x8F, 0xC9, 0x7F, 0x3F, 0x8A, 0xD4, 0x23, 0x6A, 0x72,
+                0xF1, 0xBB, 0x62, 0xFF,
+            ]),
+        ];
+
+        whitelist_tokens.contains(&mint)
+    }
+}
 
 #[account]
-pub struct UserAccount {
-    pub owner: Pubkey, // Người sở hữu tài khoản
-    pub balance: u64,  // Số dư token
+pub struct BankAccount {
+    pub owner: Pubkey,
+    pub balances: Vec<(Pubkey, u64)>,
+}
+
+impl BankAccount {
+    pub fn add_balance(&mut self, token: Pubkey, amount: u64) -> Result<()> {
+        for (key, balance) in &mut self.balances {
+            if *key == token {
+                *balance += amount;
+                return Ok(());
+            }
+        }
+        self.balances.push((token, amount));
+        Ok(())
+    }
+
+    pub fn subtract_balance(&mut self, token: Pubkey, amount: u64) -> Result<()> {
+        for (key, balance) in &mut self.balances {
+            if *key == token {
+                if *balance < amount {
+                    return Err(ErrorCode::InsufficientUserBalance.into());
+                }
+                *balance -= amount;
+                return Ok(());
+            }
+        }
+        Err(ErrorCode::InsufficientUserBalance.into())
+    }
+
+    pub fn has_sufficient_balance(&self, token: Pubkey, amount: u64) -> bool {
+        self.balances
+            .iter()
+            .find(|(key, _)| *key == token)
+            .map_or(false, |(_, balance)| *balance >= amount)
+    }
 }
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    #[account(mut)]
-    pub user_account: Account<'info, UserAccount>,
-
-    #[account(mut, constraint = 
-        user_token_account.mint == BTC_MINT_KEY || 
-        user_token_account.mint == SOL_MINT_KEY || 
-        user_token_account.mint == USDC_MINT_KEY
+    #[account(
+        mut,
+        constraint = user_ata.mint == bank_ata.mint,
+        token::authority = user_authority
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_ata: Account<'info, TokenAccount>,
 
-    #[account(mut, constraint = 
-        bank_token_account.mint == BTC_MINT_KEY || 
-        bank_token_account.mint == SOL_MINT_KEY || 
-        bank_token_account.mint == USDC_MINT_KEY
-    )]
-    pub bank_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bank_ata: Account<'info, TokenAccount>,
 
-    pub system_program: Program<'info, System>,
+    #[account(mut)]
+    pub user_bank_account: Account<'info, BankAccount>,
+
+    #[account(mut)]
+    pub bank: Account<'info, Bank>,
+
+    pub user_authority: Signer<'info>,
     pub token_program: Program<'info, Token>,
-    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
-    #[account(mut)]
-    pub user: Signer<'info>,
-
-    #[account(mut)]
-    pub user_account: Account<'info, UserAccount>,
-
-    #[account(mut, constraint = 
-        user_token_account.mint == BTC_MINT_KEY || 
-        user_token_account.mint == SOL_MINT_KEY || 
-        user_token_account.mint == USDC_MINT_KEY
+    #[account(
+        mut,
+        constraint = user_ata.mint == bank_ata.mint,
+        token::authority = bank_authority
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_ata: Account<'info, TokenAccount>,
 
-    #[account(mut, constraint = 
-        bank_token_account.mint == BTC_MINT_KEY || 
-        bank_token_account.mint == SOL_MINT_KEY || 
-        bank_token_account.mint == USDC_MINT_KEY
-    )]
-    pub bank_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub bank_ata: Account<'info, TokenAccount>,
 
-    pub system_program: Program<'info, System>,
+    #[account(mut)]
+    pub user_bank_account: Account<'info, BankAccount>,
+
+    #[account(mut)]
+    pub bank: Account<'info, Bank>,
+
+    pub bank_authority: Signer<'info>,
     pub token_program: Program<'info, Token>,
-    pub rent: Sysvar<'info, Rent>,
 }
-
 
 #[error_code]
 pub enum ErrorCode {
     #[msg("Insufficient token balance in your wallet.")]
     InsufficientBalance,
-    #[msg("Not enough tokens in your account to withdraw.")]
-    InsufficientFunds,
-    #[msg("The provided token is not supported by the bank.")]
+    #[msg("You do not have enough balance in your bank account.")]
+    InsufficientUserBalance,
+    #[msg("The provided token is not supported.")]
     InvalidToken,
 }
-
-pub const BTC_MINT_KEY: Pubkey = Pubkey::new_from_array([
-    0x39, 0x6E, 0xFC, 0x2F, 0x1E, 0x8B, 0x35, 0xB9, 0x8A, 0xDB, 0x6C, 0x70, 0x74, 0xFD, 0x34, 0xDF,
-    0xF2, 0x0B, 0x36, 0xAD, 0x89, 0x59, 0xE3, 0x9B, 0x16, 0x42, 0x17, 0x91, 0x44, 0x82, 0x74, 0xE2,
-]);
-
-pub const SOL_MINT_KEY: Pubkey = Pubkey::new_from_array([
-    0x1, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x12,
-    0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22,
-]);
-
-pub const USDC_MINT_KEY: Pubkey = Pubkey::new_from_array([
-    0x4A, 0xBC, 0xD1, 0xAB, 0x5B, 0x6F, 0xE7, 0x94, 0xC8, 0xE3, 0x93, 0x8E, 0xB5, 0xDC, 0xF8, 0xD1,
-    0x82, 0xAA, 0x71, 0x8F, 0xC9, 0x7F, 0x3F, 0x8A, 0xD4, 0x23, 0x6A, 0x72, 0xF1, 0xBB, 0x62, 0xFF,
-]);
